@@ -1,0 +1,1397 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>大茅埔調查團生態相機監測分析平台 v3.8.12</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- React & ReactDOM -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <!-- Babel for JSX -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <!-- Recharts -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prop-types/15.8.1/prop-types.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/recharts/2.12.7/Recharts.js"></script>
+    <!-- Leaflet -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" />
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+    <!-- html2canvas for Screenshot -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+</head>
+<body class="bg-gray-50 text-gray-800">
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useMemo, useRef, useCallback } = React;
+        const RechartsLib = window.Recharts || {};
+        const { 
+          BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip: RechartsTooltip, Legend, ResponsiveContainer,
+          LineChart, Line, ComposedChart, ScatterChart, Scatter
+        } = RechartsLib;
+
+        // --- 核心引擎：內建強固別稱與錯字對應 ---
+        const getBuiltinAliasMap = () => ({
+            '深山竹雞': '台灣山鷓鴣',
+            '深山雞': '台灣山鷓鴣',
+            '臺灣山鷓鴣': '台灣山鷓鴣',
+            '台灣山鷓鴣': '台灣山鷓鴣',
+            '臺灣竹雞': '台灣竹雞',
+            '台灣竹雞': '台灣竹雞',
+            '台灣擬啄木': '五色鳥',
+            '台灣野山羊': '台灣野山羊(長鬃山羊)',
+            '頭烏線': '頭烏線(褐頂雀鶥)',
+            '藍腹鷳': '藍腹鷴',
+            '藍腹鵬': '藍腹鷴',
+            '五色鳥': '五色鳥',
+            '山羌': '山羌',
+            '大冠鷲': '大冠鷲',
+            '黃嘴角鴞': '黃嘴角鴞',
+            '台灣騷蟬': '台灣騷蟬',
+            '白腰鵲鴝': '白腰鵲鴝',
+            '樹鵲': '樹鵲',
+            '白頭翁': '白頭翁'
+        });
+
+        const standardizeSpeciesName = (rawName, aliasMap = {}) => {
+            if (!rawName) return '未知物種';
+            let name = String(rawName).trim();
+            if (aliasMap[name]) return aliasMap[name];
+            
+            let altName1 = name.replace(/臺灣/g, '台灣');
+            if (aliasMap[altName1]) return aliasMap[altName1];
+            let altName2 = name.replace(/台灣/g, '臺灣');
+            if (aliasMap[altName2]) return aliasMap[altName2];
+
+            name = altName1;
+            if (name.includes('色鳥')) name = '五色鳥';
+            if (name === '羌的' || name === '山羌') name = '山羌';
+            if (name.includes('冠鷲')) name = '大冠鷲';
+            if (name === '翁的' || name === '頭翁' || name === '白頭翁 ') name = '白頭翁';
+            if (name === '動物') name = '不知名動物';
+            if (name === '鳥類' || name === '鳥的' || name === '未知鳥類') name = '不知名鳥類';
+            if (name === '蟬的' || name === '騷蟬' || name === '台灣騷蟬') name = '台灣騷蟬';
+            if (name === '雞的' || name === '台灣竹雞' || name === '臺灣竹雞') name = '台灣竹雞';
+            if (name === '深山竹雞' || name === '深山雞') name = '台灣山鷓鴣';
+            if (name === '白腰鵲鴝') name = '白腰鵲鴝';
+            if (name === '藍腹鷳' || name === '藍腹鵬') name = '藍腹鷴';
+            if (name === '黃嘴角鴞') name = '黃嘴角鴞';
+
+            if (aliasMap[name]) return aliasMap[name];
+            return name;
+        };
+
+        const parseCustomDate = (dateStr) => {
+          if (!dateStr) return null;
+          let cleanStr = String(dateStr).trim();
+          const regex = /(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})(?:\s+(AM|PM|上午|下午))?\s+(\d{1,2}):(\d{1,2})(?::(\d{1,2})|\s+(\d{1,2}))?/i;
+          const match = cleanStr.match(regex);
+          if (match) {
+            let [_, y, m, d, ampm, h, min, s1, s2] = match;
+            h = parseInt(h, 10);
+            ampm = ampm ? ampm.toUpperCase() : '';
+            if ((ampm === 'PM' || ampm === '下午') && h < 12) h += 12;
+            if ((ampm === 'AM' || ampm === '上午') && h === 12) h = 0;
+            return new Date(parseInt(y, 10), parseInt(m, 10) - 1, parseInt(d, 10), h, parseInt(min, 10), parseInt(s1 || s2 || '0', 10));
+          }
+          const fallback = new Date(cleanStr.replace('上午', 'AM').replace('下午', 'PM'));
+          if (!isNaN(fallback.getTime())) return fallback;
+          return null;
+        };
+
+        const parseRawCSV = (text) => {
+          const cleanText = text.replace(/^\uFEFF/, '');
+          const lines = cleanText.split(/\r?\n/).filter(line => line.trim() !== '');
+          if (lines.length === 0) return [];
+          const headers = lines[0].split(',').map(h => h.trim().replace(/^\*/, '').replace(/"/g, ''));
+          const result = [];
+          for (let i = 1; i < lines.length; i++) {
+            const lineStr = lines[i].trim();
+            if (!lineStr || lineStr.replace(/,/g, '') === '') continue;
+            let obj = {};
+            let currentline = [];
+            let inQuotes = false;
+            let val = '';
+            for (let char of lines[i]) {
+               if (char === '"') inQuotes = !inQuotes;
+               else if (char === ',' && !inQuotes) { currentline.push(val); val = ''; } 
+               else val += char;
+            }
+            currentline.push(val);
+            headers.forEach((header, index) => {
+               obj[header] = currentline[index] ? currentline[index].trim().replace(/"/g, '') : '';
+            });
+            result.push(obj);
+          }
+          return result;
+        };
+
+        const isStray = (sp) => {
+            if (!sp) return false;
+            const s = sp.toLowerCase();
+            if (s.includes('石虎') || s.includes('麝香貓') || s.includes('豹貓')) return false;
+            return ['犬', '狗', '貓'].some(k => s.includes(k));
+        };
+
+        const normalizeMonth = (mStr) => {
+          if (!mStr) return '';
+          let clean = String(mStr).trim().replace(/[\/\.]/g, '-');
+          const parts = clean.split('-');
+          if (parts.length >= 2) {
+            return `${parts[0]}-${parts[1].padStart(2, '0')}`;
+          }
+          return clean;
+        };
+
+        function DaMaoPuDashboard() {
+          const [systemAlert, setSystemAlert] = useState('');
+          const [rawData, setRawData] = useState([]);
+          const [cleanedData, setCleanedData] = useState([]);
+          const [isProcessing, setIsProcessing] = useState(false);
+          
+          const [startMonth, setStartMonth] = useState('');
+          const [endMonth, setEndMonth] = useState('');
+          
+          const [speciesReferenceList, setSpeciesReferenceList] = useState([]);
+          const [speciesAliasMap, setSpeciesAliasMap] = useState(getBuiltinAliasMap());
+          
+          const [unmatchedRecords, setUnmatchedRecords] = useState([]);
+          const [showUnmatchedModal, setShowUnmatchedModal] = useState(false);
+
+          const [selectedSite, setSelectedSite] = useState('所有點位');
+          const [selectedSpecies, setSelectedSpecies] = useState('所有物種');
+          const [selectedHuntingSite, setSelectedHuntingSite] = useState('所有點位');
+          const [selectedStraySite, setSelectedStraySite] = useState('所有點位');
+          const [selectedMniSite, setSelectedMniSite] = useState('所有點位'); 
+
+          const [activeTab, setActiveTab] = useState('changelog');
+          const [showDog, setShowDog] = useState(false);
+          const [showCat, setShowCat] = useState(false);
+          const [showHuman, setShowHuman] = useState(false);
+
+          const [geminiApiKey, setGeminiApiKey] = useState('');
+          const [aiMniReport, setAiMniReport] = useState('');
+          const [aiMniTableData, setAiMniTableData] = useState(null); 
+          const [isAiLoading, setIsAiLoading] = useState(false);
+          const [satoyamaReport, setSatoyamaReport] = useState('');
+          const [isSatoyamaLoading, setIsSatoyamaLoading] = useState(false);
+          const [esgReport, setEsgReport] = useState('');
+          const [isEsgLoading, setIsEsgLoading] = useState(false);
+
+          const sortSpecies = useCallback((a, b) => {
+             if (a === '所有物種') return -1;
+             if (b === '所有物種') return 1;
+             if (speciesReferenceList.length > 0) {
+                 const idxA = speciesReferenceList.indexOf(a);
+                 const idxB = speciesReferenceList.indexOf(b);
+                 if (idxA !== -1 && idxB !== -1) return idxA - idxB;
+                 if (idxA !== -1) return -1;
+                 if (idxB !== -1) return 1;
+             }
+             return a.localeCompare(b);
+          }, [speciesReferenceList]);
+
+          const handleReferenceFileUpload = (e) => {
+            const file = e.target.files[0];
+            if (file) {
+               const reader = new FileReader();
+               reader.onload = (evt) => {
+                   const parsed = parseRawCSV(evt.target.result);
+                   const refList = [];
+                   const aliasMap = { ...getBuiltinAliasMap() };
+
+                   parsed.forEach(row => {
+                       let stdName = row['物種'] || row['*物種'] || '';
+                       let aliasesStr = row['別稱'] || row['別名'] || '';
+
+                       stdName = stdName.trim();
+                       if (stdName) {
+                           if (!refList.includes(stdName)) refList.push(stdName);
+                           aliasMap[stdName] = stdName; 
+
+                           if (aliasesStr) {
+                               const aliases = String(aliasesStr).split('、');
+                               aliases.forEach(alias => {
+                                   const cleanAlias = alias.trim();
+                                   if (cleanAlias) {
+                                       aliasMap[cleanAlias] = stdName;
+                                       if (cleanAlias.includes('台灣')) aliasMap[cleanAlias.replace(/台灣/g, '臺灣')] = stdName;
+                                       if (cleanAlias.includes('臺灣')) aliasMap[cleanAlias.replace(/臺灣/g, '台灣')] = stdName;
+                                   }
+                               });
+                           }
+                           if (stdName.includes('台灣')) aliasMap[stdName.replace(/台灣/g, '臺灣')] = stdName;
+                           if (stdName.includes('臺灣')) aliasMap[stdName.replace(/臺灣/g, '台灣')] = stdName;
+                       }
+                   });
+
+                   setSpeciesReferenceList(refList);
+                   setSpeciesAliasMap(aliasMap);
+                   setSystemAlert(`✅ 成功匯入 ${refList.length} 筆標準物種與關聯別稱字典！\n\n系統已依此名錄完成排序設定與同義字對應規則。`);
+               };
+               reader.readAsText(file);
+            }
+          };
+
+          const exportCSV = (data, filename) => {
+            if (!data || data.length === 0) { 
+                setSystemAlert("目前沒有資料可匯出！"); 
+                return; 
+            }
+            const headers = Object.keys(data[0]).join(',');
+            const rows = data.map(obj => Object.values(obj).map(val => `"${val}"`).join(',')).join('\n');
+            const csvContent = "data:text/csv;charset=utf-8,\uFEFF" + headers + '\n' + rows;
+            const encodedUri = encodeURI(csvContent);
+            const link = document.createElement("a");
+            link.setAttribute("href", encodedUri);
+            link.setAttribute("download", `${filename}.csv`);
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+          };
+
+          const processData = (data, startM, endM) => {
+            setIsProcessing(true);
+            setCleanedData([]);
+            setUnmatchedRecords([]);
+            setShowUnmatchedModal(false);
+
+            setTimeout(() => {
+               try {
+                 let startDate = null;
+                 let endDate = null;
+                 if (startM && endM) {
+                   const [startY, startMo] = startM.split('.').map(Number);
+                   const [endY, endMo] = endM.split('.').map(Number);
+                   startDate = new Date(startY, startMo - 1, 1);
+                   endDate = new Date(endY, endMo, 0, 23, 59, 59);
+                 }
+
+                 const unmatchedList = [];
+                 const rawRows = parseRawCSV(data);
+                 let processed = [];
+                 
+                 const sortedAliasKeys = Object.keys(speciesAliasMap)
+                     .filter(k => k.length >= 2 || ['貓','狗','犬','人','車'].includes(k))
+                     .sort((a, b) => b.length - a.length);
+
+                 rawRows.forEach((row) => {
+                   let dateKey = Object.keys(row).find(k => k.includes('日期') || k.includes('時間'));
+                   let dateStr = row[dateKey];
+                   if (!dateStr) return;
+                   const dateObj = parseCustomDate(dateStr);
+                   if (!dateObj) return;
+
+                   let siteAlias = row['*相機別名'] || row['相機別名'] || '';
+                   if (!siteAlias) return;
+
+                   let rawSpecies = row['*俗名'] || row['俗名'] || '';
+                   if (!rawSpecies) return;
+
+                   let mainSpecies = standardizeSpeciesName(rawSpecies, speciesAliasMap);
+                   let speciesId = row['*物種編號'] || row['物種編號'] || '';
+                   let notes = row['備註'] || '';
+                   
+                   let tempStr = row['*溫度'] || row['溫度'];
+                   let tempVal = null;
+                   if (tempStr) {
+                       const match = String(tempStr).toUpperCase().match(/[-+]?\d*\.\d+|\d+/);
+                       if (match) tempVal = parseFloat(match[0]);
+                   }
+
+                   const baseEvent = {
+                     ...row,
+                     Timestamp: dateObj,
+                     Month: `${dateObj.getFullYear()}-${String(dateObj.getMonth() + 1).padStart(2, '0')}`,
+                     DateOnly: `${dateObj.getFullYear()}-${String(dateObj.getMonth() + 1).padStart(2, '0')}-${String(dateObj.getDate()).padStart(2, '0')}`,
+                     Hour: dateObj.getHours(),
+                     SpeciesId: speciesId,
+                     Temp: tempVal,
+                     Notes: notes,
+                     Site: siteAlias,
+                     Count: parseInt(row['數量']) || 1,
+                     Lon: parseFloat(row['Y座標']) || parseFloat(row['X座標']) || 120.84,
+                     Lat: parseFloat(row['X座標']) || parseFloat(row['Y座標']) || 24.19,
+                     Conservation: row['保育等級'] || '無'
+                   };
+
+                   const checkIsHuman = (sp, id) => (id.toUpperCase() === 'H' || ['人類', '人', '車', '機車', '砂石車', '卡車', '單車', '腳踏車'].some(k => sp.includes(k)));
+
+                   let rowSpeciesSet = new Set();
+                   if (mainSpecies && mainSpecies !== '空拍') {
+                       rowSpeciesSet.add(mainSpecies);
+                   }
+
+                   let foundSpeciesFromNotes = false;
+                   if (notes.trim() !== '') {
+                       for (const key of sortedAliasKeys) {
+                           if (notes.includes(key)) {
+                               const std = speciesAliasMap[key];
+                               if (std) {
+                                   rowSpeciesSet.add(std);
+                                   foundSpeciesFromNotes = true;
+                               }
+                           }
+                       }
+                   }
+
+                   const isGenderOrAge = ['公鳥', '母鳥', '幼鳥', '成鳥', '公', '母', '雄', '雌'].some(k => notes.includes(k));
+                   const hasUnknownMarker = ['不知名', '未知名', '不明', '疑似'].some(k => notes.includes(k));
+                   const hasCallKeyword = ['叫', '鳴', '聲', '鳴叫'].some(k => notes.includes(k));
+                   const isGenericNoise = ['清楚', '另一隻', '很大', '模糊', '移動', '通過', '覓食', '進食', '尋找', '嗅聞', '停留'].some(k => notes.includes(k));
+
+                   if (notes.trim() !== '' && !foundSpeciesFromNotes && !isGenderOrAge && !isGenericNoise && (hasUnknownMarker || hasCallKeyword)) {
+                       unmatchedList.push({
+                           ...row,
+                           解析未登錄物種原因: `備註疑似提及未知物種：${notes}`,
+                           備註內容: notes
+                       });
+                   }
+
+                   if (rowSpeciesSet.size === 0) {
+                       rowSpeciesSet.add(mainSpecies);
+                   }
+
+                   rowSpeciesSet.forEach(sp => {
+                       processed.push({
+                           ...baseEvent,
+                           Species: sp,
+                           IsHuman: checkIsHuman(sp, speciesId)
+                       });
+                   });
+                 });
+
+                 let finalProcessed = processed;
+                 if (startDate && endDate) {
+                    finalProcessed = finalProcessed.filter(d => d.Timestamp >= startDate && d.Timestamp <= endDate);
+                 }
+
+                 finalProcessed.sort((a, b) => {
+                   if (a.Site !== b.Site) return a.Site.localeCompare(b.Site);
+                   if (a.Species !== b.Species) return a.Species.localeCompare(b.Species);
+                   return a.Timestamp - b.Timestamp;
+                 });
+
+                 const validEvents = [];
+                 let lastEvent = null;
+                 for (let i = 0; i < finalProcessed.length; i++) {
+                   const curr = finalProcessed[i];
+                   if (curr.Species === '空拍' && !curr.Notes.includes('叫') && !curr.Notes.includes('聲')) continue;
+                   
+                   if (!lastEvent || curr.Site !== lastEvent.Site || curr.Species !== lastEvent.Species) {
+                     validEvents.push(curr);
+                     lastEvent = curr;
+                   } else {
+                     const timeDiffHours = (curr.Timestamp - lastEvent.Timestamp) / (1000 * 60 * 60);
+                     const featureDiff = (curr.Count !== lastEvent.Count) || (curr.Notes !== lastEvent.Notes);
+                     if (timeDiffHours > 1 || featureDiff) {
+                       validEvents.push(curr);
+                       lastEvent = curr;
+                     }
+                   }
+                 }
+
+                 const siteDateRanges = {};
+                 validEvents.forEach(e => {
+                   if (!siteDateRanges[e.Site]) siteDateRanges[e.Site] = { min: e.Timestamp, max: e.Timestamp };
+                   else {
+                     if (e.Timestamp < siteDateRanges[e.Site].min) siteDateRanges[e.Site].min = e.Timestamp;
+                     if (e.Timestamp > siteDateRanges[e.Site].max) siteDateRanges[e.Site].max = e.Timestamp;
+                   }
+                 });
+
+                 validEvents.forEach(e => {
+                   const spanMs = siteDateRanges[e.Site].max - siteDateRanges[e.Site].min;
+                   const days = Math.max(1, spanMs / (1000 * 60 * 60 * 24) + 1);
+                   e.ActiveDays = days;
+                   e.T_hours = days * 24.0;
+                   e.D_days = days;
+                 });
+
+                 setCleanedData(validEvents);
+                 
+                 if (unmatchedList.length > 0) {
+                     setUnmatchedRecords(unmatchedList);
+                     setShowUnmatchedModal(true);
+                 }
+                 
+                 setIsProcessing(false);
+               } catch (err) {
+                 console.error(err);
+                 setIsProcessing(false);
+                 setSystemAlert("資料處理發生不可預期的錯誤，請確認 CSV 格式是否正確。");
+               }
+            }, 300);
+          };
+
+          const handleFileUpload = (e) => {
+            const file = e.target.files[0];
+            if (file) {
+               const reader = new FileReader();
+               reader.onload = (evt) => {
+                 const rawText = evt.target.result;
+                 const parsedData = parseRawCSV(rawText);
+                 setRawData(parsedData);
+
+                 let minD = null, maxD = null;
+                 parsedData.forEach(row => {
+                    let dateKey = Object.keys(row).find(k => k.includes('日期') || k.includes('時間'));
+                    const dObj = parseCustomDate(row[dateKey]);
+                    if(dObj) {
+                       if(!minD || dObj < minD) minD = dObj;
+                       if(!maxD || dObj > maxD) maxD = dObj;
+                    }
+                 });
+
+                 let sMonth = startMonth;
+                 let eMonth = endMonth;
+                 if (minD && maxD) {
+                     sMonth = `${minD.getFullYear()}.${String(minD.getMonth()+1).padStart(2,'0')}`;
+                     eMonth = `${maxD.getFullYear()}.${String(maxD.getMonth()+1).padStart(2,'0')}`;
+                     setStartMonth(sMonth);
+                     setEndMonth(eMonth);
+                 }
+                 
+                 processData(rawText, sMonth, eMonth);
+                 setActiveTab('map');
+               };
+               reader.readAsText(file);
+            }
+          };
+
+          const uniqueSites = useMemo(() => [...new Set(cleanedData.map(d => d.Site))], [cleanedData]);
+          const uniqueSpecies = useMemo(() => {
+              const spSet = [...new Set(cleanedData.map(d => d.Species))];
+              return spSet.sort(sortSpecies);
+          }, [cleanedData, sortSpecies]);
+          
+          const kpiData = useMemo(() => {
+             const siteDays = {};
+             cleanedData.forEach(d => { if(!siteDays[d.Site]) siteDays[d.Site] = d.ActiveDays; });
+             return {
+                 sites: uniqueSites.length,
+                 species: uniqueSpecies.length,
+                 rawRecords: rawData.length,
+                 validEvents: cleanedData.length,
+                 totalDays: Math.round(Object.values(siteDays).reduce((a, b) => a + b, 0)) || 0
+             };
+          }, [cleanedData, uniqueSites, uniqueSpecies, rawData]);
+
+          const allMonthsList = useMemo(() => {
+            if (cleanedData.length === 0 || !startMonth || !endMonth) return [];
+            const [startY, startMo] = startMonth.split('.').map(Number);
+            const [endY, endMo] = endMonth.split('.').map(Number);
+            const months = [];
+            let curY = startY, curM = startMo;
+            while (curY < endY || (curY === endY && curM <= endMo)) {
+              months.push(`${curY}-${String(curM).padStart(2, '0')}`);
+               curM++;
+               if (curM > 12) { curM = 1; curY++; }
+            }
+            return months;
+          }, [startMonth, endMonth, cleanedData]);
+
+          const monthlyChartData = useMemo(() => {
+            let filtered = cleanedData;
+            if (selectedSite !== '所有點位') filtered = filtered.filter(d => d.Site === selectedSite);
+            if (selectedSpecies !== '所有物種') filtered = filtered.filter(d => d.Species === selectedSpecies);
+            const grouped = {};
+            allMonthsList.forEach(m => { grouped[m] = { Month: m, count: 0, T: 720 }; });
+            filtered.forEach(curr => {
+               if (grouped[curr.Month]) {
+                 grouped[curr.Month].count += 1;
+                 grouped[curr.Month].T = curr.T_hours || 720;
+               }
+            });
+            return Object.values(grouped).map(d => ({ Month: d.Month, OI: parseFloat(((d.count / (d.T || 720)) * 1000).toFixed(2)), Events: d.count }));
+          }, [cleanedData, selectedSite, selectedSpecies, allMonthsList]);
+
+          const cumulativeTableData = useMemo(() => {
+            const grouped = cleanedData.reduce((acc, curr) => {
+               const key = `${curr.Site}_${curr.Species}`;
+               if (!acc[key]) acc[key] = { Site: curr.Site, Species: curr.Species, Events: 0, T: curr.T_hours, D: curr.D_days };
+               acc[key].Events += 1;
+               return acc;
+            }, {});
+            let data = Object.values(grouped).map(d => ({ ...d, OI_Hour: ((d.Events / d.T) * 1000).toFixed(2), RAI_Day: ((d.Events / d.D) * 100).toFixed(2) }));
+            if (selectedSite !== '所有點位') data = data.filter(d => d.Site === selectedSite);
+            if (selectedSpecies !== '所有物種') data = data.filter(d => d.Species === selectedSpecies);
+            return data.sort((a, b) => b.OI_Hour - a.OI_Hour);
+          }, [cleanedData, selectedSite, selectedSpecies]);
+
+          const apoaData = useMemo(() => {
+            if (cleanedData.length === 0) return [];
+            let filtered = cleanedData;
+            if (selectedSite !== '所有點位') filtered = filtered.filter(d => d.Site === selectedSite);
+            if (selectedSpecies !== '所有物種') filtered = filtered.filter(d => d.Species === selectedSpecies);
+            const siteDays = {};
+            filtered.forEach(d => { if(!siteDays[d.Site]) siteDays[d.Site] = d.ActiveDays; });
+            const activeDaysSum = Object.values(siteDays).reduce((a, b) => a + b, 0) || 1;
+
+            const hourlyStats = Array.from({length: 24}, (_, i) => ({ Hour: i, d_count: 0 }));
+            const eventSet = new Set();
+            filtered.forEach(d => { eventSet.add(`${d.Site}_${d.DateOnly}_${d.Hour}`); });
+            eventSet.forEach(id => {
+               const hour = parseInt(id.split('_')[2], 10);
+               hourlyStats[hour].d_count += 1;
+            });
+            return hourlyStats.map(h => ({
+               Hour: `${String(h.Hour).padStart(2, '0')}:00`,
+               APOA: parseFloat((h.d_count / activeDaysSum).toFixed(4)),
+               Events: h.d_count
+            }));
+          }, [cleanedData, selectedSite, selectedSpecies]);
+
+          const rhythmData = useMemo(() => {
+            const hours = Array.from({length: 24}, (_, i) => ({ Hour: i, Target: 0, Dog: 0, Cat: 0, Human: 0 }));
+            cleanedData.forEach(d => {
+               const h = d.Hour;
+               if (isNaN(h)) return;
+               if (selectedSpecies !== '所有物種' && d.Species === selectedSpecies) hours[h].Target += 1;
+               if (selectedSpecies === '所有物種') hours[h].Target += 1;
+               if (showDog && isStray(d.Species) && (d.Species.includes('犬') || d.Species.includes('狗'))) hours[h].Dog += 1;
+               if (showCat && isStray(d.Species) && d.Species.includes('貓')) hours[h].Cat += 1;
+               if (showHuman && d.IsHuman) hours[h].Human += 1;
+            });
+            return hours;
+          }, [cleanedData, selectedSpecies, showDog, showCat, showHuman]);
+
+          const tempScatterData = useMemo(() => {
+            return cleanedData.filter(d => d.Temp !== null && d.Species).map(d => ({ Temp: d.Temp, Species: d.Species }));
+          }, [cleanedData]);
+          
+          const tempSpeciesList = useMemo(() => {
+             const list = [...new Set(tempScatterData.map(d => d.Species))];
+             return list.sort(sortSpecies);
+          }, [tempScatterData, sortSpecies]);
+
+          const tempDiurnalData = useMemo(() => {
+              const hours = Array.from({length: 24}, (_, i) => ({ Hour: i, Count: 0, TempSum: 0, TempCount: 0 }));
+              cleanedData.forEach(d => {
+                  const h = d.Hour;
+                  if (isNaN(h)) return;
+                  if (d.Temp !== null) { hours[h].TempSum += d.Temp; hours[h].TempCount += 1; }
+                  if (selectedSpecies === '所有物種' || d.Species === selectedSpecies) hours[h].Count += 1;
+              });
+              return hours.map(h => ({ Hour: `${String(h.Hour).padStart(2, '0')}:00`, Count: h.Count, MeanTemp: h.TempCount > 0 ? parseFloat((h.TempSum / h.TempCount).toFixed(1)) : null }));
+          }, [cleanedData, selectedSpecies]);
+
+          const tempHeatmapData = useMemo(() => {
+              const bins = [
+                  { label: '<10°C', min: -Infinity, max: 10 }, { label: '10-15°C', min: 10, max: 15 },
+                  { label: '15-20°C', min: 15, max: 20 }, { label: '20-25°C', min: 20, max: 25 },
+                  { label: '25-30°C', min: 25, max: 30 }, { label: '30-35°C', min: 30, max: 35 },
+                  { label: '35-40°C', min: 35, max: 40 }, { label: '>40°C', min: 40, max: Infinity }
+              ];
+              const speciesStats = {};
+              cleanedData.forEach(d => {
+                  if (d.Temp !== null && d.Species) {
+                      if (!speciesStats[d.Species]) speciesStats[d.Species] = { total: 0, counts: Array(8).fill(0) };
+                      speciesStats[d.Species].total += 1;
+                      const bIdx = bins.findIndex(b => d.Temp >= b.min && d.Temp < b.max);
+                      if (bIdx !== -1) speciesStats[d.Species].counts[bIdx] += 1;
+                  }
+              });
+              return Object.entries(speciesStats).map(([sp, data]) => ({
+                  Species: sp, percentages: data.counts.map(c => parseFloat(((c / data.total) * 100).toFixed(1)))
+              })).sort((a, b) => sortSpecies(a.Species, b.Species)); 
+          }, [cleanedData, sortSpecies]);
+
+          const getHeatmapColor = (p) => {
+              if (isNaN(p) || p === 0) return '#fffbea';
+              if (p < 15) return '#fef08a';
+              if (p < 30) return '#fde047';
+              if (p < 50) return '#fbbf24';
+              if (p < 75) return '#f97316';
+              return '#dc2626';
+          };
+
+          const handleDownloadHeatmap = () => {
+              const heatmapEl = document.getElementById('heatmap-export-container');
+              if (!heatmapEl) return;
+              const originalMaxHeight = heatmapEl.style.maxHeight;
+              const originalOverflow = heatmapEl.style.overflow;
+              heatmapEl.style.maxHeight = 'none';
+              heatmapEl.style.overflow = 'visible';
+              window.html2canvas(heatmapEl, { scale: 2, backgroundColor: '#ffffff' }).then(canvas => {
+                  heatmapEl.style.maxHeight = originalMaxHeight;
+                  heatmapEl.style.overflow = originalOverflow;
+                  const link = document.createElement('a');
+                  link.download = '大茅埔_物種溫度熱力圖長截圖.png';
+                  link.href = canvas.toDataURL('image/png');
+                  link.click();
+              }).catch(err => {
+                  console.error(err);
+                  setSystemAlert("截圖失敗，請確認已連線並載入 html2canvas。");
+                  heatmapEl.style.maxHeight = originalMaxHeight;
+                  heatmapEl.style.overflow = originalOverflow;
+              });
+          };
+
+          const huntingChartData = useMemo(() => {
+            let huntingEvents = cleanedData.filter(d => ['斷腿', '帶項圈', '跛腳', '獸夾', '山豬吊', '傷'].some(k => (d.Notes || '').includes(k)));
+            if (selectedHuntingSite !== '所有點位') huntingEvents = huntingEvents.filter(d => d.Site === selectedHuntingSite);
+            const grouped = {};
+            allMonthsList.forEach(m => { grouped[m] = { Month: m }; });
+            huntingEvents.forEach(e => {
+               if (!grouped[e.Month]) grouped[e.Month] = { Month: e.Month };
+               const targetSite = selectedHuntingSite === '所有點位' ? e.Site : selectedHuntingSite;
+               grouped[e.Month][targetSite] = (grouped[e.Month][targetSite] || 0) + 1;
+            });
+            return Object.values(grouped).sort((a, b) => a.Month.localeCompare(b.Month));
+          }, [cleanedData, selectedHuntingSite, allMonthsList]);
+
+          const threatSites = useMemo(() => {
+            if (selectedHuntingSite !== '所有點位') return [selectedHuntingSite];
+            return uniqueSites;
+          }, [selectedHuntingSite, uniqueSites]);
+
+          const strayEventChartData = useMemo(() => {
+            let strayEvents = cleanedData.filter(d => isStray(d.Species));
+            if (selectedStraySite !== '所有點位') strayEvents = strayEvents.filter(d => d.Site === selectedStraySite);
+            const grouped = {};
+            allMonthsList.forEach(m => { grouped[m] = { Date: m, DogCount: 0, CatCount: 0 }; });
+            strayEvents.forEach(e => {
+               const mKey = normalizeMonth(e.Month);
+               if (grouped[mKey]) {
+                 const isDog = e.Species.toLowerCase().includes('犬') || e.Species.toLowerCase().includes('狗');
+                 if (isDog) grouped[mKey].DogCount += 1;
+                 else grouped[mKey].CatCount += 1;
+               }
+            });
+            return Object.values(grouped).sort((a, b) => a.Date.localeCompare(b.Date));
+          }, [cleanedData, selectedStraySite, allMonthsList]);
+
+          const strayMniChartData = useMemo(() => {
+            if (!aiMniTableData || aiMniTableData.length === 0) return [];
+            const grouped = {};
+            allMonthsList.forEach(m => { grouped[m] = { Date: m, DogMNI: 0, CatMNI: 0 }; });
+            aiMniTableData.forEach(row => {
+               const siteVal = row.Site || row.點位 || row.camera || '';
+               if (selectedMniSite === '所有點位' || siteVal === selectedMniSite) {
+                 const mKey = normalizeMonth(row.Month || row.月份 || row.date || '');
+                 if (grouped[mKey]) {
+                   const dogVal = parseInt(row.DogMNI || row['家犬（預估個體數）'] || row.dogMNI || row.DogCount || 0, 10) || 0;
+                   const catVal = parseInt(row.CatMNI || row['家貓（預估個體數）'] || row.catMNI || row.CatCount || 0, 10) || 0;
+                   grouped[mKey].DogMNI += dogVal;
+                   grouped[mKey].CatMNI += catVal;
+                 }
+               }
+            });
+            return Object.values(grouped).sort((a, b) => a.Date.localeCompare(b.Date));
+          }, [aiMniTableData, selectedMniSite, allMonthsList]);
+
+          const mapRef = useRef(null);
+          useEffect(() => {
+            if (activeTab !== 'map' || cleanedData.length === 0) return;
+            let isMounted = true;
+            let pulseTimer = null;
+            const initMap = () => {
+               if (!window.L || !isMounted) return;
+               const container = document.getElementById('map-container');
+               if (!container) return;
+               if (container._leaflet_id) container._leaflet_id = null;
+               if (mapRef.current) { 
+                 mapRef.current.off();
+                 mapRef.current.remove(); 
+                 mapRef.current = null; 
+               }
+               const map = window.L.map('map-container').setView([24.210, 120.840], 13);
+               mapRef.current = map;
+               window.L.tileLayer('https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}', { maxZoom: 20, noWrap: true }).addTo(map);
+
+               const siteGroup = {};
+               cleanedData.forEach(d => {
+                 if (!siteGroup[d.Site]) siteGroup[d.Site] = { lat: d.Lat, lon: d.Lon, species: {}, total: 0, T: d.T_hours, days: d.ActiveDays, hasDogCat: false, hasHunt: false };
+                 siteGroup[d.Site].total += 1;
+                 siteGroup[d.Site].species[d.Species] = (siteGroup[d.Site].species[d.Species] || 0) + 1;
+                 if (isStray(d.Species)) siteGroup[d.Site].hasDogCat = true;
+                 if (['斷腿', '獸夾', '山豬吊', '傷', '項圈'].some(k => (d.Notes || '').includes(k))) siteGroup[d.Site].hasHunt = true;
+               });
+
+               const pulseLayers = [];
+               Object.entries(siteGroup).forEach(([site, data]) => {
+                 if (!data.lat || !data.lon) return;
+                 let popupHtml = `<div class="p-3 min-w-[240px]"><h3 class="font-bold text-base border-b pb-1 mb-2 text-emerald-800">${site}</h3><p class="text-xs mb-1 text-gray-600">有效觀測: <b>${Math.round(data.days)}</b> 天</p><p class="text-xs mb-2 text-gray-600">有效事件: <b>${data.total}</b> 筆</p><div class="max-h-48 overflow-y-auto border rounded bg-white"><table class="w-full text-xs text-left"><thead><tr class="bg-gray-100"><th class="p-1.5">物種</th><th class="p-1.5 text-right">OI/1000h</th></tr></thead><tbody>`;
+                 Object.entries(data.species).map(([sp, count]) => ({ sp, oi: ((count / data.T) * 1000).toFixed(2) })).sort((a, b) => b.oi - a.oi).forEach(s => {
+                   popupHtml += `<tr class="border-b"><td class="p-1.5">${s.sp}</td><td class="p-1.5 text-right font-bold text-emerald-700">${s.oi}</td></tr>`;
+                 });
+                 popupHtml += `</tbody></table></div></div>`;
+                 let coreColor = "#ff7800";
+                 if (data.hasDogCat && data.hasHunt) coreColor = "#FFEA00";
+                 else if (data.hasDogCat) coreColor = "#FF1744";
+                 else if (data.hasHunt) coreColor = "#00E5FF";
+                 if (data.hasDogCat || data.hasHunt) {
+                   const halo = window.L.circleMarker([data.lat, data.lon], { radius: 14, fillColor: coreColor, color: coreColor, weight: 1, fillOpacity: 0.5, interactive: false }).addTo(map);
+                   pulseLayers.push({ layer: halo, hasDogCat: data.hasDogCat, hasHunt: data.hasHunt, phase: 0 });
+                 }
+                 window.L.circleMarker([data.lat, data.lon], { radius: 9, fillColor: coreColor, color: "#ffffff", weight: 2, opacity: 1, fillOpacity: 0.95, interactive: true }).bindPopup(popupHtml).bindTooltip(site).addTo(map);
+               });
+
+               if (pulseLayers.length > 0) {
+                 pulseTimer = setInterval(() => {
+                   if (!isMounted || !mapRef.current) return;
+                   pulseLayers.forEach(item => {
+                     item.phase = (item.phase + 1) % 20;
+                     const progress = item.phase / 20;
+                     const currentRadius = 12 + Math.sin(progress * Math.PI * 2) * 4;
+                     const currentOpacity = 0.3 + Math.abs(Math.sin(progress * Math.PI * 2)) * 0.5;
+                     let color = '#FF1744';
+                     if (item.hasDogCat && item.hasHunt) color = item.phase < 10 ? '#FFEA00' : '#FF1744';
+                     else if (item.hasDogCat) color = '#FF1744';
+                     else if (item.hasHunt) color = '#00E5FF';
+                     item.layer.setRadius(currentRadius);
+                     item.layer.setStyle({ fillColor: color, color: color, fillOpacity: currentOpacity });
+                   });
+                 }, 120);
+               }
+               setTimeout(() => { if (mapRef.current) mapRef.current.invalidateSize(true); }, 200);
+            };
+            setTimeout(initMap, 150);
+            return () => { 
+               isMounted = false; 
+               if (pulseTimer) clearInterval(pulseTimer); 
+               if (mapRef.current) { mapRef.current.off(); mapRef.current.remove(); mapRef.current = null; }
+            };
+          }, [activeTab, cleanedData]);
+
+          const callGeminiAPI = async (systemInstruction, promptText, setLoading, onSuccess, onError) => {
+            if (!geminiApiKey || geminiApiKey.trim() === '') {
+               setSystemAlert("⚠️ 尚未輸入 Gemini API Key！\n請先在頂端欄位填入您的 API Key 才能執行 AI 運算。");
+               return false;
+            }
+            setLoading(true);
+            try {
+               const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiApiKey}`, {
+                 method: 'POST',
+                 headers: { 'Content-Type': 'application/json' },
+                 body: JSON.stringify({
+                   contents: [{ parts: [{ text: promptText }] }],
+                   systemInstruction: { parts: [{ text: systemInstruction }] }
+                 })
+               });
+               const data = await res.json();
+               if (data.error) throw new Error(data.error.message);
+               let text = data.candidates?.[0]?.content?.parts?.[0]?.text || "無回應。";
+               const charCount = text.length;
+               const finalOutput = `${text}\n\n📊 總計產生字數：${charCount} 字`;
+               onSuccess(finalOutput);
+               return true;
+            } catch (error) {
+               onError(`【API 錯誤】\n${error.message}`);
+               return false;
+            } finally {
+               setIsAiLoading(false);
+               setIsSatoyamaLoading(false);
+               setIsEsgLoading(false);
+            }
+          };
+
+          const handleAIMniAction = () => {
+            const strayDataStr = JSON.stringify(cleanedData.filter(d => isStray(d.Species)).map(d => ({ 檔案編號: d['*檔案編號'] || d['檔案編號'], 日期與時間: d['資料產生日期與時間'], 點位: d.Site, 物種俗名: d.Species, 數量: d.Count, 備註: d.Notes })));
+            const prompt = `【任務目標】請執行 MNI（最小個體數）分析。\n【輸出格式要求】請附帶純 JSON 陣列：[{"Site":"點位","Month":"YYYY-MM","DogTotalCount":5,"DogMNI":2,"CatTotalCount":1,"CatMNI":1,"KeyFeatures":"特徵"}]\n【原始資料】${strayDataStr}`;
+            callGeminiAPI("野生動物族群生態學專家。請分段清晰並以結構化標題輸出。", prompt, setIsAiLoading, (text) => {
+                 setAiMniReport(text);
+                 try {
+                   let jsonStr = text.match(/```json\n?([\s\S]*?)\n?```/i)?.[1] || text;
+                   const parsed = JSON.parse(jsonStr.substring(jsonStr.indexOf('['), jsonStr.lastIndexOf(']') + 1));
+                   if (Array.isArray(parsed)) setAiMniTableData(parsed);
+                 } catch(e) {}
+               }, (errText) => setAiMniReport(errText));
+          };
+
+          const handleSatoyamaAction = () => {
+            const context = `- 總點位數: ${kpiData.sites}\n- 偵測物種數: ${kpiData.species}\n- 有效事件總數: ${kpiData.validEvents}\n- 分析時間區間: ${startMonth} 至 ${endMonth}`;
+            const prompt = `您是里山倡議專家。請依據大茅埔數據（${context}）進行里山創生與生態廊道分析，並提供 AI 生成里山報告用的專業 Prompt。`;
+            callGeminiAPI("里山倡議生態保育專家。請分段清晰並使用標題排版。", prompt, setIsSatoyamaLoading, setSatoyamaReport, setSatoyamaReport);
+          };
+
+          const handleEsgAction = () => {
+            const context = `- 總點位數: ${kpiData.sites}\n- 偵測物種數: ${kpiData.species}\n- 有效事件總數: ${kpiData.validEvents}\n- 總天數: ${kpiData.totalDays}`;
+            const prompt = `您是 TNFD 與 ESG 專家。依據數據（${context}）進行自然資本評估，並提供生成學術級 ESG/TNFD 報告專用 Prompt。`;
+            callGeminiAPI("永續發展與 TNFD 自然相關財務揭露專家。請分段清晰並使用結構化標題輸出。", prompt, setIsEsgLoading, setEsgReport, setEsgReport);
+          };
+
+          return (
+            <div className="min-h-screen bg-gray-50 text-gray-800 font-sans relative">
+               
+               {systemAlert && (
+                   <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[200] backdrop-blur-sm">
+                       <div className="bg-white p-6 rounded-2xl shadow-2xl max-w-md w-full text-center space-y-4 border-t-4 border-emerald-500">
+                           <div className="text-4xl">🔔</div>
+                           <p className="text-gray-700 whitespace-pre-wrap leading-relaxed">{systemAlert}</p>
+                           <button onClick={() => setSystemAlert('')} className="bg-emerald-600 hover:bg-emerald-700 text-white px-6 py-2 rounded-lg font-bold transition">確定</button>
+                       </div>
+                   </div>
+               )}
+
+               {showUnmatchedModal && (
+                   <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[100] backdrop-blur-sm">
+                       <div className="bg-white p-6 rounded-2xl shadow-2xl max-w-2xl w-full border-t-4 border-red-500 transform transition-all space-y-4">
+                           <div className="flex items-center gap-3">
+                               <span className="text-3xl">⚠️</span>
+                               <div>
+                                   <h3 className="text-xl font-bold text-gray-800">發現字典外的潛在物種與未登錄資料</h3>
+                                   <p className="text-xs text-red-600 font-medium">這些資料已自動從計算與圖表中排除，您可以下載原始資料進行檢視與修正。</p>
+                               </div>
+                           </div>
+
+                           <div className="bg-red-50 border border-red-100 rounded-lg p-4 max-h-56 overflow-y-auto space-y-2">
+                               <table className="w-full text-xs text-left">
+                                   <thead>
+                                       <tr className="border-b border-red-200 text-red-800">
+                                           <th className="p-1.5">相機點位</th>
+                                           <th className="p-1.5">時間</th>
+                                           <th className="p-1.5">解析原因 / 備註</th>
+                                       </tr>
+                                   </thead>
+                                   <tbody>
+                                       {unmatchedRecords.map((r, i) => (
+                                           <tr key={i} className="border-b border-red-100/50">
+                                               <td className="p-1.5 font-bold">{r['*相機別名'] || r['相機別名']}</td>
+                                               <td className="p-1.5 text-gray-600">{r['資料產生日期與時間'] || Object.values(r)[1]}</td>
+                                               <td className="p-1.5 text-red-700">{r.解析未登錄物種原因}</td>
+                                           </tr>
+                                       ))}
+                                   </tbody>
+                               </table>
+                           </div>
+
+                           <div className="flex justify-between items-center pt-2">
+                               <button 
+                                   onClick={() => exportCSV(unmatchedRecords, '未登錄物種原始資料')} 
+                                   className="bg-blue-600 hover:bg-blue-700 text-white text-sm px-4 py-2.5 rounded-lg font-bold shadow transition flex items-center gap-2">
+                                   📥 下載未登錄物種原始資料 (CSV)
+                               </button>
+                               <button 
+                                   onClick={() => setShowUnmatchedModal(false)} 
+                                   className="bg-gray-800 hover:bg-gray-700 text-white text-sm px-5 py-2.5 rounded-lg font-bold shadow transition">
+                                   我知道了，關閉視窗 (將自動排除未登錄資料)
+                               </button>
+                           </div>
+                       </div>
+                   </div>
+               )}
+
+               <nav className="bg-emerald-800 text-white p-4 shadow-md flex justify-between items-center z-10 relative">
+                 <div className="flex items-center space-x-3">
+                   <span className="text-xl">🌿</span>
+                   <h1 className="text-xl font-bold tracking-wide">大茅埔調查團生態相機監測分析平台 <span className="text-sm font-normal text-emerald-300 ml-2">v3.8.12 歷史與日誌彙整版</span></h1>
+                 </div>
+               </nav>
+
+               <div className="p-6 max-w-[1600px] mx-auto space-y-4">
+                 <section className="bg-white p-5 rounded-xl shadow-sm border border-gray-100 flex flex-wrap gap-4 items-center justify-between">
+                   <div className="flex gap-4 items-center">
+                     <div className="relative overflow-hidden group w-48 shrink-0">
+                       <input type="file" accept=".csv" onChange={handleReferenceFileUpload} className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10" />
+                       <button className="w-full bg-blue-100 text-blue-800 border border-blue-300 font-bold py-2 px-4 rounded-lg shadow-sm group-hover:bg-blue-200 transition flex items-center justify-center gap-2">
+                         📋 上傳物種名錄
+                       </button>
+                     </div>
+                     <div className="relative overflow-hidden group w-48 shrink-0">
+                       <input type="file" accept=".csv" onChange={handleFileUpload} className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10" />
+                       <button className="w-full font-bold py-2 px-4 rounded-lg shadow-sm transition flex items-center justify-center gap-2 bg-emerald-100 text-emerald-800 border border-emerald-300 group-hover:bg-emerald-200">
+                         📁 上傳物種資料表
+                       </button>
+                     </div>
+                     
+                     <div className="flex gap-4 text-sm bg-gray-50 p-2 rounded-lg border">
+                       <div>
+                         <label className="block text-gray-500 mb-1 text-xs">開始 (自動)</label>
+                         <input type="text" value={startMonth} readOnly className="p-1 rounded w-20 bg-white border border-gray-200 text-gray-600 font-bold text-center" />
+                       </div>
+                       <div>
+                         <label className="block text-gray-500 mb-1 text-xs">結束 (自動)</label>
+                         <input type="text" value={endMonth} readOnly className="p-1 rounded w-20 bg-white border border-gray-200 text-gray-600 font-bold text-center" />
+                       </div>
+                     </div>
+                   </div>
+                   <div className="w-[350px] shrink-0">
+                      <label className="block text-gray-500 mb-1 text-xs font-bold">🔑 Gemini API Key (AI 報告專用)</label>
+                      <input type="password" placeholder="請貼上您的 API Key..." value={geminiApiKey} onChange={e=>setGeminiApiKey(e.target.value)} className="border border-gray-300 p-2 rounded-lg w-full shadow-inner focus:outline-none focus:ring-2 focus:ring-emerald-500 text-sm" />
+                   </div>
+                 </section>
+
+                 {(cleanedData.length > 0 || activeTab === 'changelog') && (
+                   <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+                     <div className="bg-white p-4 rounded-xl shadow-sm border-l-4 border-emerald-500 hover:shadow-md transition">
+                       <p className="text-sm text-gray-500 mb-1">總觀測點位</p>
+                       <p className="text-3xl font-bold text-gray-800">{kpiData.sites || 0}</p>
+                     </div>
+                     <div className="bg-white p-4 rounded-xl shadow-sm border-l-4 border-emerald-500 hover:shadow-md transition">
+                       <p className="text-sm text-gray-500 mb-1">偵測物種數 (經自動校正)</p>
+                       <p className="text-3xl font-bold text-gray-800">{kpiData.species || 0}</p>
+                     </div>
+                     <div className="bg-white p-4 rounded-xl shadow-sm border-l-4 border-gray-400 hover:shadow-md transition">
+                       <p className="text-sm text-gray-500 mb-1">原始影音量 (筆)</p>
+                       <p className="text-3xl font-bold text-gray-800">{kpiData.rawRecords || 0}</p>
+                     </div>
+                     <div className="bg-white p-4 rounded-xl shadow-sm border-l-4 border-blue-500 hover:shadow-md transition">
+                       <p className="text-sm text-gray-500 mb-1">有效事件數 (含拆分聲音)</p>
+                       <p className="text-3xl font-bold text-blue-600">{kpiData.validEvents || 0}</p>
+                     </div>
+                     <div className="bg-white p-4 rounded-xl shadow-sm border-l-4 border-purple-500 hover:shadow-md transition">
+                       <p className="text-sm text-gray-500 mb-1">總有效運作天數 (相機日)</p>
+                       <p className="text-3xl font-bold text-purple-600">{kpiData.totalDays || 0}</p>
+                     </div>
+                   </div>
+                 )}
+
+                 {isProcessing ? (
+                   <div className="text-center py-20 bg-white rounded-xl shadow-sm border">
+                       <div className="animate-spin inline-block w-8 h-8 border-[3px] border-current border-t-transparent text-emerald-600 rounded-full mb-4" role="status" aria-label="loading"></div>
+                       <div className="text-emerald-700 font-bold">資料清洗、多重物種拆分與標準化運算中...</div>
+                   </div>
+                 ) : (
+                   <>
+                     <div className="bg-white rounded-xl shadow-sm border overflow-hidden">
+                       <div className="flex flex-wrap border-b bg-gray-50">
+                         {['map', 'trends', 'apoa', 'rhythm', 'temp', 'threat-ai', 'esg-ai', 'changelog'].map(tab => {
+                             const labels = {
+                                 'map': '🗺️ GIS 聚光燈', 'trends': '📊 OI/RAI 豐度', 'apoa': '🕒 APOA 機率', 'rhythm': '🌙 24H 節律',
+                                 'temp': '🌡️ 環境溫度對物種分析', 'threat-ai': '🚨 威脅分析 (上下排版)', 'esg-ai': '📖 里山 ESG', 'changelog': 'ℹ️ 版本說明與演進日誌'
+                             };
+                             return (
+                                 <button key={tab} onClick={()=>setActiveTab(tab)} className={`px-4 py-3 font-bold text-sm transition-colors ${activeTab===tab?'bg-white text-emerald-700 border-b-2 border-emerald-500':'text-gray-500 hover:text-gray-700 hover:bg-gray-100'}`}>
+                                     {labels[tab]}
+                                 </button>
+                             )
+                         })}
+                       </div>
+
+                       <div className="p-6 bg-gray-50/30 min-h-[600px]">
+                         
+                         {activeTab === 'map' && cleanedData.length > 0 && (
+                           <div className="h-full flex flex-col">
+                             <div className="mb-3 text-sm text-gray-600 bg-white p-4 rounded border shadow-sm">
+                               <b>GIS 威脅聚光燈地圖</b>：外圍光暈代表區域威脅：<span className="text-red-500 font-bold">極亮紅閃爍(遊蕩犬貓)</span>、<span className="text-cyan-500 font-bold">亮青藍閃爍(非法狩獵)</span>。
+                             </div>
+                             <div className="relative flex-1 min-h-[550px] rounded-lg border z-0 overflow-hidden">
+                               <div id="map-container" className="absolute inset-0"></div>
+                             </div>
+                           </div>
+                         )}
+
+                         {activeTab === 'trends' && cleanedData.length > 0 && (
+                           <div className="space-y-6">
+                             <div className="flex gap-4 bg-white p-4 rounded border shadow-sm">
+                               <select className="w-1/2 border border-gray-200 p-2 rounded-lg text-sm focus:ring-emerald-500" value={selectedSite} onChange={e=>setSelectedSite(e.target.value)}><option>所有點位</option>{uniqueSites.map(s=><option key={s}>{s}</option>)}</select>
+                               <select className="w-1/2 border border-gray-200 p-2 rounded-lg text-sm focus:ring-emerald-500" value={selectedSpecies} onChange={e=>setSelectedSpecies(e.target.value)}>
+                                   <option>所有物種</option>
+                                   {uniqueSpecies.map(s=><option key={s}>{s}</option>)}
+                               </select>
+                             </div>
+                             <div className="bg-white p-4 rounded-lg shadow-sm border h-80">
+                               {RechartsLib && ResponsiveContainer && BarChart && (
+                                <ResponsiveContainer width="100%" height="100%">
+                                   <BarChart data={monthlyChartData}>
+                                     <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                                     <XAxis dataKey="Month" />
+                                     <YAxis stroke="#10b981" />
+                                     <RechartsTooltip />
+                                     <Legend />
+                                     <Bar dataKey="OI" name="OI (出現頻率指數)" fill="#10b981" radius={[4, 4, 0, 0]} />
+                                  </BarChart>
+                                </ResponsiveContainer>
+                               )}
+                             </div>
+                             <div className="bg-white rounded-lg shadow-sm border overflow-hidden">
+                               <div className="p-4 border-b flex justify-between items-center bg-gray-50">
+                                 <h4 className="font-bold text-gray-700">累計總量 OI / RAI 計算表</h4>
+                               </div>
+                               <div className="overflow-x-auto max-h-80">
+                                 <table className="w-full text-sm text-left">
+                                   <thead className="bg-gray-100 sticky top-0"><tr><th className="p-3">相機別名</th><th className="p-3">物種俗名</th><th className="p-3">有效次數</th><th className="p-3">總時數</th><th className="p-3 text-emerald-700">OI</th><th className="p-3 text-blue-700">RAI</th></tr></thead>
+                                   <tbody>{cumulativeTableData.map((r, i) => <tr key={i} className="border-b"><td className="p-3 font-bold">{r.Site}</td><td className="p-3">{r.Species}</td><td className="p-3">{r.Events}</td><td className="p-3 text-gray-500">{r.T}</td><td className="p-3 font-bold text-emerald-600">{r.OI_Hour}</td><td className="p-3 font-bold text-blue-600">{r.RAI_Day}</td></tr>)}</tbody>
+                                 </table>
+                               </div>
+                             </div>
+                           </div>
+                         )}
+
+                         {activeTab === 'apoa' && cleanedData.length > 0 && (
+                           <div className="space-y-4">
+                             <div className="flex gap-4 bg-white p-4 rounded border shadow-sm">
+                               <select className="w-1/2 border border-gray-200 p-2 rounded-lg text-sm" value={selectedSite} onChange={e=>setSelectedSite(e.target.value)}><option>所有點位</option>{uniqueSites.map(s=><option key={s}>{s}</option>)}</select>
+                               <select className="w-1/2 border border-gray-200 p-2 rounded-lg text-sm" value={selectedSpecies} onChange={e=>setSelectedSpecies(e.target.value)}>
+                                   <option>所有物種</option>
+                                   {uniqueSpecies.map(s=><option key={s}>{s}</option>)}
+                               </select>
+                             </div>
+                             <div className="bg-white border rounded shadow-sm p-4 h-[450px]">
+                               {RechartsLib && ResponsiveContainer && LineChart && (
+                                <ResponsiveContainer width="100%" height="100%">
+                                   <LineChart data={apoaData}>
+                                     <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                                     <XAxis dataKey="Hour" />
+                                     <YAxis domain={[0, 'dataMax + 0.05']} />
+                                     <RechartsTooltip />
+                                     <Legend />
+                                     <Line type="monotone" dataKey="APOA" stroke="#8b5cf6" strokeWidth={3} dot={{r:4}} />
+                                  </LineChart>
+                                </ResponsiveContainer>
+                               )}
+                             </div>
+                           </div>
+                         )}
+
+                         {activeTab === 'rhythm' && cleanedData.length > 0 && (
+                           <div className="space-y-6">
+                             <div className="flex flex-wrap gap-4 items-center bg-white p-4 rounded-lg shadow-sm border">
+                               <select className="border border-gray-200 p-2 rounded-lg text-sm bg-emerald-50 focus:ring-emerald-500" value={selectedSpecies} onChange={e => setSelectedSpecies(e.target.value)}>
+                                   <option>所有物種</option>
+                                   {uniqueSpecies.map(s => <option key={s}>{s}</option>)}
+                               </select>
+                               <button onClick={() => setShowDog(!showDog)} className={`px-4 py-2 rounded-full text-sm border font-bold transition ${showDog?'bg-red-100 text-red-700 border-red-300':'bg-gray-50 hover:bg-gray-100'}`}>🐾 犬隻</button>
+                               <button onClick={() => setShowCat(!showCat)} className={`px-4 py-2 rounded-full text-sm border font-bold transition ${showCat?'bg-orange-100 text-orange-700 border-orange-300':'bg-gray-50 hover:bg-gray-100'}`}>🐈 貓隻</button>
+                               <button onClick={() => setShowHuman(!showHuman)} className={`px-4 py-2 rounded-full text-sm border font-bold transition ${showHuman?'bg-blue-100 text-blue-700 border-blue-300':'bg-gray-50 hover:bg-gray-100'}`}>🚶 人類</button>
+                             </div>
+                             <div className="bg-white p-6 rounded-lg shadow-sm border h-[400px]">
+                               {RechartsLib && ResponsiveContainer && ComposedChart && (
+                                <ResponsiveContainer width="100%" height="100%">
+                                  <ComposedChart data={rhythmData}>
+                                    <CartesianGrid strokeDasharray="3 3" />
+                                    <XAxis dataKey="Hour" />
+                                    <YAxis />
+                                    <RechartsTooltip />
+                                    <Legend />
+                                    <Bar dataKey="Target" name={selectedSpecies} fill="#34d399" />
+                                    {showDog && <Line type="monotone" dataKey="Dog" name="遊蕩犬" stroke="#ef4444" strokeWidth={3} />}
+                                    {showCat && <Line type="monotone" dataKey="Cat" name="遊蕩貓" stroke="#f97316" strokeWidth={3} />}
+                                    {showHuman && <Line type="monotone" dataKey="Human" name="人類" stroke="#3b82f6" strokeWidth={3} strokeDasharray="5 5" />}
+                                  </ComposedChart>
+                                </ResponsiveContainer>
+                               )}
+                             </div>
+                           </div>
+                         )}
+
+                         {activeTab === 'temp' && cleanedData.length > 0 && (
+                            <div className="space-y-6">
+                                <div className="bg-white border rounded-xl shadow-sm p-4 space-y-2">
+                                   <h4 className="font-bold text-red-700 text-sm mb-2">📈 物種最適溫度分布圖 (依名錄順序)</h4>
+                                   <div className="overflow-y-auto" style={{ maxHeight: '600px' }}>
+                                      <div style={{ height: `${Math.max(400, tempSpeciesList.length * 25)}px` }}>
+                                         {RechartsLib && ResponsiveContainer && ScatterChart && (
+                                            <ResponsiveContainer width="100%" height="100%">
+                                                <ScatterChart margin={{ top: 20, right: 30, left: 100, bottom: 20 }}>
+                                                    <CartesianGrid strokeDasharray="3 3" />
+                                                    <XAxis type="number" dataKey="Temp" name="溫度" unit="°C" />
+                                                    <YAxis type="category" dataKey="Species" name="物種" allowDuplicatedCategory={false} width={100} tick={{fontSize: 12}} />
+                                                    <RechartsTooltip cursor={{ strokeDasharray: '3 3' }} />
+                                                    <Scatter name="觀測紀錄" data={tempScatterData} fill="#10b981" />
+                                                </ScatterChart>
+                                            </ResponsiveContainer>
+                                         )}
+                                      </div>
+                                   </div>
+                                </div>
+
+                                <div className="bg-white border rounded-xl shadow-sm p-4 space-y-4">
+                                   <div className="flex justify-between items-center">
+                                       <h4 className="font-bold text-blue-700 text-sm">📊 溫度與物種日夜活動雙軸時序圖</h4>
+                                       <select className="border border-gray-200 p-1.5 rounded-lg text-xs bg-gray-50 focus:ring-emerald-500" value={selectedSpecies} onChange={e=>setSelectedSpecies(e.target.value)}>
+                                           <option>所有物種</option>
+                                           {uniqueSpecies.map(s=><option key={s}>{s}</option>)}
+                                       </select>
+                                   </div>
+                                   <div className="h-[350px]">
+                                      {RechartsLib && ResponsiveContainer && ComposedChart && (
+                                         <ResponsiveContainer width="100%" height="100%">
+                                            <ComposedChart data={tempDiurnalData}>
+                                                <CartesianGrid strokeDasharray="3 3" />
+                                                <XAxis dataKey="Hour" tick={{fontSize:10}} />
+                                                <YAxis yAxisId="left" orientation="left" stroke="#3b82f6" />
+                                                <YAxis yAxisId="right" orientation="right" stroke="#ef4444" domain={['auto', 'auto']} />
+                                                <RechartsTooltip />
+                                                <Legend verticalAlign="top" height={20} />
+                                                <Bar yAxisId="left" dataKey="Count" name="出現次數" fill="#3b82f6" radius={[4,4,0,0]} />
+                                                <Line yAxisId="right" type="monotone" dataKey="MeanTemp" name="該時段平均溫度 (°C)" stroke="#ef4444" strokeWidth={3} dot={{r:4}} />
+                                            </ComposedChart>
+                                         </ResponsiveContainer>
+                                      )}
+                                   </div>
+                                </div>
+
+                                <div className="bg-white border rounded-xl shadow-sm p-4 space-y-4">
+                                   <div className="flex justify-between items-center border-b pb-3">
+                                       <h4 className="font-bold text-orange-700 text-sm">🔥 物種與溫度區間熱力圖 (依名錄順序)</h4>
+                                       <button onClick={handleDownloadHeatmap} className="text-xs bg-emerald-600 text-white px-4 py-2 rounded-lg hover:bg-emerald-700 shadow-sm flex items-center gap-2 font-bold transition">
+                                           📸 匯出完整長截圖
+                                       </button>
+                                   </div>
+                                   <div id="heatmap-export-container" className="overflow-auto bg-white" style={{ maxHeight: '600px' }}>
+                                       <table className="w-full text-xs text-center border-collapse">
+                                           <thead className="sticky top-0 bg-white shadow-sm z-10">
+                                               <tr>
+                                                   <th className="p-3 border-b border-gray-200 text-left text-gray-700 bg-gray-50 font-bold">物種</th>
+                                                   <th className="p-3 border-b border-gray-200 text-gray-600 bg-gray-50">&lt;10°C</th>
+                                                   <th className="p-3 border-b border-gray-200 text-gray-600 bg-gray-50">10-15°C</th>
+                                                   <th className="p-3 border-b border-gray-200 text-gray-600 bg-gray-50">15-20°C</th>
+                                                   <th className="p-3 border-b border-gray-200 text-gray-600 bg-gray-50">20-25°C</th>
+                                                   <th className="p-3 border-b border-gray-200 text-gray-600 bg-gray-50">25-30°C</th>
+                                                   <th className="p-3 border-b border-gray-200 text-gray-600 bg-gray-50">30-35°C</th>
+                                                   <th className="p-3 border-b border-gray-200 text-gray-600 bg-gray-50">35-40°C</th>
+                                                   <th className="p-3 border-b border-gray-200 text-gray-600 bg-gray-50">&gt;40°C</th>
+                                               </tr>
+                                           </thead>
+                                           <tbody>
+                                               {tempHeatmapData.map((row, idx) => (
+                                                   <tr key={idx} className="border-b border-gray-100 hover:bg-gray-50 transition">
+                                                       <td className="p-3 text-left font-bold text-gray-700 whitespace-nowrap bg-white">{row.Species}</td>
+                                                       {row.percentages.map((p, i) => (
+                                                           <td key={i} className="p-3 font-mono text-[11px]" style={{ backgroundColor: getHeatmapColor(p), color: p > 50 ? '#fff' : '#1f2937' }}>
+                                                               {isNaN(p) || p === 0 ? '-' : `${p}%`}
+                                                           </td>
+                                                       ))}
+                                                   </tr>
+                                               ))}
+                                           </tbody>
+                                       </table>
+                                   </div>
+                                </div>
+                            </div>
+                         )}
+
+                         {activeTab === 'threat-ai' && cleanedData.length > 0 && (
+                           <div className="space-y-6">
+                             <div className="bg-white border rounded-xl shadow-sm p-4 space-y-4">
+                               <div className="flex justify-between items-center">
+                                 <h4 className="font-bold text-cyan-700 text-sm">🏹 狩獵跡象追蹤</h4>
+                                 <select className="border border-gray-200 p-1.5 rounded-lg text-xs bg-gray-50 font-bold" value={selectedHuntingSite} onChange={e=>setSelectedHuntingSite(e.target.value)}>
+                                   <option>所有點位</option>
+                                   {uniqueSites.map(s=><option key={s}>{s}</option>)}
+                                 </select>
+                               </div>
+                               <div className="h-[350px]">
+                                 {RechartsLib && ResponsiveContainer && BarChart && (
+                                  <ResponsiveContainer width="100%" height="100%">
+                                    <BarChart data={huntingChartData}>
+                                      <CartesianGrid strokeDasharray="3 3" />
+                                      <XAxis dataKey="Month" />
+                                      <YAxis />
+                                      <RechartsTooltip />
+                                      <Legend />
+                                      {threatSites.map((site, idx) => <Bar key={site} dataKey={site} stackId="a" fill={`hsl(${idx * 40 + 190}, 70%, 50%)`} />)}
+                                    </BarChart>
+                                  </ResponsiveContainer>
+                                 )}
+                               </div>
+                             </div>
+
+                             <div className="bg-gray-900 border rounded-xl shadow-sm p-5 text-gray-100 space-y-4">
+                               <h4 className="text-emerald-400 font-bold border-b border-gray-700 pb-2">🧠 AI 分析：犬貓 MNI</h4>
+                               <button onClick={handleAIMniAction} className="w-full bg-red-700 hover:bg-red-600 py-3 rounded-lg font-bold transition">🐾 執行 AI 估算犬貓 MNI</button>
+                               <div className="p-5 bg-gray-800 rounded-lg text-sm min-h-[150px] max-h-[350px] overflow-auto whitespace-pre-wrap leading-relaxed font-sans">
+                                 {isAiLoading ? "AI 運算中..." : (aiMniReport || "點擊按鈕執行 AI 分析")}
+                               </div>
+                             </div>
+
+                             <div className="bg-white border rounded-xl shadow-sm p-4 space-y-4">
+                               <div className="flex justify-between items-center">
+                                 <h4 className="font-bold text-red-700 text-sm">📊 遊蕩犬貓次數總量 (1小時獨立事件)</h4>
+                                 <select className="border border-gray-200 p-1.5 rounded-lg text-xs bg-gray-50" value={selectedStraySite} onChange={e=>setSelectedStraySite(e.target.value)}>
+                                   <option>所有點位</option>
+                                   {uniqueSites.map(s=><option key={s}>{s}</option>)}
+                                 </select>
+                               </div>
+                               <div className="h-[320px]">
+                                 {RechartsLib && ResponsiveContainer && BarChart && (
+                                   <ResponsiveContainer width="100%" height="100%">
+                                     <BarChart data={strayEventChartData}>
+                                       <CartesianGrid strokeDasharray="3 3" />
+                                       <XAxis dataKey="Date" />
+                                       <YAxis />
+                                       <RechartsTooltip />
+                                       <Legend />
+                                       <Bar dataKey="DogCount" name="家犬獨立事件" fill="#ef4444" radius={[4,4,0,0]} />
+                                       <Bar dataKey="CatCount" name="家貓獨立事件" fill="#f97316" radius={[4,4,0,0]} />
+                                     </BarChart>
+                                   </ResponsiveContainer>
+                                 )}
+                               </div>
+                             </div>
+
+                             <div className="bg-white border rounded-xl shadow-sm p-4 space-y-4">
+                               <div className="flex justify-between items-center">
+                                 <h4 className="font-bold text-red-700 text-sm">📈 AI 估算每月遊蕩犬貓 MNI 個體數趨勢圖</h4>
+                                 <select className="border border-red-200 p-1.5 rounded-lg text-xs bg-red-50 text-red-900 font-bold" value={selectedMniSite} onChange={e=>setSelectedMniSite(e.target.value)}>
+                                   <option>所有點位</option>
+                                   {uniqueSites.map(s=><option key={s}>{s}</option>)}
+                                 </select>
+                               </div>
+                               <div className="h-[320px]">
+                                 {aiMniTableData && aiMniTableData.length > 0 ? (
+                                   RechartsLib && ResponsiveContainer && BarChart && (
+                                     <ResponsiveContainer width="100%" height="100%">
+                                       <BarChart data={strayMniChartData}>
+                                         <CartesianGrid strokeDasharray="3 3" />
+                                         <XAxis dataKey="Date" />
+                                         <YAxis />
+                                         <RechartsTooltip />
+                                         <Legend />
+                                         <Bar dataKey="DogMNI" name="家犬預估個體數 (MNI)" fill="#dc2626" radius={[4,4,0,0]} />
+                                         <Bar dataKey="CatMNI" name="家貓預估個體數 (MNI)" fill="#ea580c" radius={[4,4,0,0]} />
+                                       </BarChart>
+                                     </ResponsiveContainer>
+                                   )
+                                 ) : (
+                                   <div className="h-full flex items-center justify-center text-gray-400 text-sm border-2 border-dashed rounded-lg bg-gray-50">
+                                     尚無 AI MNI 數據，請至上方點擊「執行 AI 估算犬貓 MNI」按鈕生成
+                                   </div>
+                                 )}
+                               </div>
+                             </div>
+
+                           </div>
+                         )}
+                         
+                         {activeTab === 'esg-ai' && cleanedData.length > 0 && (
+                           <div className="space-y-6">
+                             <div className="bg-emerald-50 border p-4 rounded-xl shadow-sm flex justify-between items-center">
+                               <div>
+                                 <h4 className="font-bold text-emerald-900">📊 匯出全方位生態大數據主檔</h4>
+                                 <p className="text-xs text-emerald-700">供外部 AI 專家分析使用，包含 OI, APOA 等計算結果。</p>
+                               </div>
+                               <button onClick={() => exportCSV(cleanedData, '大數據主檔')} className="bg-emerald-700 text-white font-bold px-4 py-2 rounded">📥 匯出 CSV</button>
+                             </div>
+
+                             <div className="bg-gray-900 rounded-xl p-6 text-gray-100 space-y-4">
+                               <div className="flex justify-between border-b border-gray-700 pb-2">
+                                 <h3 className="font-bold text-emerald-400">⛰️ 里山創生行動方案</h3>
+                                 <button onClick={handleSatoyamaAction} className="bg-emerald-600 px-4 py-1.5 rounded text-sm">✨ 執行 AI 分析</button>
+                               </div>
+                               <div className="p-4 bg-gray-800 rounded text-sm h-72 overflow-auto whitespace-pre-wrap leading-relaxed font-sans">
+                                 {isSatoyamaLoading ? "分析中..." : (satoyamaReport || "尚未執行")}
+                               </div>
+                             </div>
+
+                             <div className="bg-gray-900 rounded-xl p-6 text-gray-100 space-y-4">
+                               <div className="flex justify-between border-b border-gray-700 pb-2">
+                                 <h3 className="font-bold text-blue-400">📄 學術級 ESG / TNFD 報告</h3>
+                                 <button onClick={handleEsgAction} className="bg-blue-600 px-4 py-1.5 rounded text-sm">✨ 執行 AI 分析</button>
+                               </div>
+                               <div className="p-4 bg-gray-800 rounded text-sm h-72 overflow-auto whitespace-pre-wrap leading-relaxed font-sans">
+                                 {isEsgLoading ? "分析中..." : (esgReport || "尚未執行")}
+                               </div>
+                             </div>
+                           </div>
+                         )}
+
+                         {activeTab === 'changelog' && (
+                           <div className="bg-white p-8 rounded-xl shadow-sm border space-y-8">
+                             
+                             <div className="flex items-center justify-between border-b border-gray-200 pb-4">
+                                 <div className="flex items-center gap-3">
+                                     <span className="text-3xl">📘</span>
+                                     <h3 className="text-2xl font-bold text-gray-800 tracking-wide">版本歷史說明 (Version History)</h3>
+                                 </div>
+                                 <span className="bg-emerald-100 text-emerald-800 px-3 py-1 rounded-full text-sm font-bold shadow-sm">
+                                     當前版本: v3.8.12
+                                 </span>
+                             </div>
+
+                             <div className="relative border-l-2 border-emerald-500 ml-4 space-y-10 pb-8">
+                               
+                               {/* v3.8.12 */}
+                               <div className="relative pl-8">
+                                 <div className="absolute w-4 h-4 bg-emerald-500 rounded-full -left-[9px] top-1.5 ring-4 ring-emerald-100"></div>
+                                 <h4 className="font-bold text-gray-800 text-lg flex items-center gap-2">
+                                     v3.8.12 歷史與日誌彙整版 <span className="bg-emerald-600 text-white text-[10px] px-2 py-0.5 rounded uppercase tracking-wider font-bold">Latest Release</span>
+                                 </h4>
+                                 <p className="text-sm text-gray-500 mb-3 mt-1">開發節點：重構版本更新日誌，完整梳理專案開發歷程。</p>
+                                 <div className="bg-gray-50 p-4 rounded-lg border border-gray-100">
+                                     <ul className="list-disc list-inside text-sm text-gray-700 space-y-2 leading-relaxed">
+                                        <li><strong className="text-emerald-700">全新版本日誌分頁</strong>：匯整從 v1.0 基礎建設期至 v3.8 旗艦期的所有重大技術變更與優化紀錄，以時間軸形式直觀呈現，作為後續團隊交接與跨對話整併的標準。</li>
+                                     </ul>
+                                 </div>
+                               </div>
+
+                               {/* v3.8 ~ 3.8.11 */}
+                               <div className="relative pl-8">
+                                 <div className="absolute w-4 h-4 bg-blue-500 rounded-full -left-[9px] top-1.5 ring-4 ring-blue-100"></div>
+                                 <h4 className="font-bold text-gray-800 text-lg">v3.8.0 ~ v3.8.11 智慧多重解析與濾除旗艦期</h4>
+                                 <p className="text-sm text-gray-500 mb-3 mt-1">開發節點：引入「雙檔上傳」機制、聽覺紀錄拆分、與 8 級距溫度熱力圖。</p>
+                                 <div className="bg-blue-50/50 p-4 rounded-lg border border-blue-100">
+                                     <ul className="list-disc list-inside text-sm text-gray-700 space-y-2 leading-relaxed">
+                                        <li><strong className="text-blue-700">智慧性別濾除與雜訊過濾 (v3.8.11)</strong>：排除「公鳥」、「母鳥」等性別/年齡註記與日常敘述，避免被誤報為未知物種。</li>
+                                        <li><strong className="text-blue-700">全域子字串與多重事件拆分 (v3.8.8 ~ v3.8.10)</strong>：突破傳統 1 行 1 物種限制。無論主畫面拍到什麼，只要「備註」提及字典物種（如：黃嘴角鴞、白腰鵲鴝、深山竹雞等），系統會自動拆分為獨立聽覺事件並完整納入所有豐度與溫度計算中。</li>
+                                        <li><strong className="text-blue-700">AI 輸出格式化 (v3.8.7)</strong>：優化 Gemini AI 生成的 MNI、里山與 ESG 報告，支援 Markdown 排版與自動字數統計。</li>
+                                        <li><strong className="text-blue-700">防呆匯出與威脅排版 (v3.8.6)</strong>：跳窗警告未登錄物種，並新增「下載未登錄物種原始資料 (CSV)」按鈕；威脅分析模組（遊蕩犬貓與 MNI）嚴格採用上下垂直獨立排版。</li>
+                                        <li><strong className="text-blue-700">雙檔上傳與別稱字典 (v3.8.4 ~ v3.8.5)</strong>：新增上傳 `物種名錄.csv` 功能，系統依此建立「標準名-別稱」對照字典（支援全形「、」分隔），並將圖表下拉選單嚴格同步為名錄順序。</li>
+                                        <li><strong className="text-blue-700">智慧物種矯正 (v3.8.3)</strong>：自動將「臺灣」統一為「台灣」，並修正常見筆誤（如：藍腹鷳 $\rightarrow$ 藍腹鷴）。</li>
+                                     </ul>
+                                 </div>
+                               </div>
+
+                               {/* v3.7 */}
+                               <div className="relative pl-8">
+                                 <div className="absolute w-4 h-4 bg-orange-500 rounded-full -left-[9px] top-1.5 ring-4 ring-orange-100"></div>
+                                 <h4 className="font-bold text-gray-800 text-lg">v3.7 ~ v3.7.2 溫度參數與防呆完善期</h4>
+                                 <p className="text-sm text-gray-500 mb-3 mt-1">開發節點：深度挖掘相機參數，落實學術嚴謹性。</p>
+                                 <div className="bg-orange-50/50 p-4 rounded-lg border border-orange-100">
+                                     <ul className="list-disc list-inside text-sm text-gray-700 space-y-2 leading-relaxed">
+                                        <li><strong className="text-orange-700">溫度與活動分析圖表</strong>：首次將相機識別的溫度參數統一轉為「℃」，開發「日夜活動與溫度雙軸時序圖」與「最適溫度散點圖」。</li>
+                                        <li><strong className="text-orange-700">嚴格保育分級排序</strong>：物種與點位選單首度建立嚴格順序規範（依據學術 PDF，從一級保育排至人類活動）。</li>
+                                        <li><strong className="text-orange-700">術語正名</strong>：將「家犬/家貓」全面正名為符合當代動保標準的「遊蕩犬/遊蕩貓」。</li>
+                                     </ul>
+                                 </div>
+                               </div>
+
+                               {/* v3.6 */}
+                               <div className="relative pl-8">
+                                 <div className="absolute w-4 h-4 bg-purple-500 rounded-full -left-[9px] top-1.5 ring-4 ring-purple-100"></div>
+                                 <h4 className="font-bold text-gray-800 text-lg">v3.6 AI 賦能與永續發展期</h4>
+                                 <p className="text-sm text-gray-500 mb-3 mt-1">開發節點：導入生成式 AI，銜接企業 ESG 與國際倡議。</p>
+                                 <div className="bg-purple-50/50 p-4 rounded-lg border border-purple-100">
+                                     <ul className="list-disc list-inside text-sm text-gray-700 space-y-2 leading-relaxed">
+                                        <li><strong className="text-purple-700">Gemini AI 深度整合</strong>：自動萃取相機大數據，結構化生成「里山創生計畫書」與「ESG / TNFD 生態保育報告」。</li>
+                                        <li><strong className="text-purple-700">威脅分析升級</strong>：專屬模組化分析淺山生態威脅，包含「遊蕩犬貓 MNI 個體數估算」與「非法狩獵跡象（獸夾/山豬吊）追蹤」。</li>
+                                     </ul>
+                                 </div>
+                               </div>
+
+                               {/* v1.0 ~ v3.5 */}
+                               <div className="relative pl-8">
+                                 <div className="absolute w-4 h-4 bg-gray-500 rounded-full -left-[9px] top-1.5 ring-4 ring-gray-200"></div>
+                                 <h4 className="font-bold text-gray-800 text-lg">v1.0 ~ v3.5 基礎建設與大數據管線期</h4>
+                                 <p className="text-sm text-gray-500 mb-3 mt-1">開發節點：確立零安裝單檔架構與核心生態演算法。</p>
+                                 <div className="bg-gray-100/80 p-4 rounded-lg border border-gray-200">
+                                     <ul className="list-disc list-inside text-sm text-gray-700 space-y-2 leading-relaxed">
+                                        <li><strong className="text-gray-800">零安裝單檔應用 (Single-File Architecture)</strong>：將 React、Tailwind、Recharts 與 Leaflet 全部打包於單一 `index.html`，純前端離線運行，方便在地調查團隊攜帶與分享。</li>
+                                        <li><strong className="text-gray-800">核心資料管線 (Data Pipeline)</strong>：建立「1 小時獨立事件」過濾原則（同點位、同物種 1 小時內連拍視為單一事件），精準計算有效工作時數與相機日 (Camera Days)。</li>
+                                        <li><strong className="text-gray-800">基礎豐度與節律</strong>：自動生成 OI (出現頻率指數)、RAI (相對豐富度指數) 月趨勢圖與 APOA 時段出現機率圖。</li>
+                                        <li><strong className="text-gray-800">GIS 聚光燈地圖</strong>：整合 Leaflet，直觀呈現相機事件分佈，並加入紅/藍閃爍的動態威脅警示光暈。</li>
+                                     </ul>
+                                 </div>
+                               </div>
+
+                             </div>
+                           </div>
+                         )}
+
+                         {cleanedData.length === 0 && activeTab !== 'changelog' && (
+                           <div className="bg-white p-20 rounded-xl shadow-sm border text-center flex flex-col items-center justify-center">
+                             <div className="text-6xl mb-4">📋</div>
+                             <h3 className="text-xl font-bold text-gray-600 mb-2">請上傳物種名錄與資料表</h3>
+                             <p className="text-gray-400 text-sm max-w-md">
+                                 請先點擊「上傳物種名錄」，再上傳「物種資料表」以開始精準的生態監測分析。
+                             </p>
+                           </div>
+                         )}
+
+                       </div>
+                     </div>
+                   </>
+                 )}
+               </div>
+            </div>
+          );
+        }
+
+        ReactDOM.render(<DaMaoPuDashboard />, document.getElementById('root'));
+    </script>
+</body>
+</html>
